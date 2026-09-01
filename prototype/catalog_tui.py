@@ -2,8 +2,8 @@
 """Throwaway interactive TUI prototype for the local AI Asset catalog.
 
 Run: python3 prototype/catalog_tui.py
-Keys: arrows/j/k navigate, / search, x clear, f family, r rescan,
-      o open, v reveal, c copy path, ? help, q quit.
+Keys: arrows/j/k navigate, / search, x clear, f family, h harness,
+      Enter preview, ! problems, r rescan, o/v/c source actions, ? help, q quit.
 """
 
 from __future__ import annotations
@@ -67,13 +67,19 @@ ASSETS: list[dict[str, Any]] = [
     },
 ]
 
+HARNESSES = (
+    "All",
+    *sorted({placement[0] for asset in ASSETS for placement in asset["placements"]}),
+)
 
-def filtered_assets(query: str, family: str) -> list[dict[str, Any]]:
+
+def filtered_assets(query: str, family: str, harness: str) -> list[dict[str, Any]]:
     needle = query.strip().lower()
     return [
         asset
         for asset in ASSETS
         if (family == "All" or asset["family"] == family)
+        and (harness == "All" or any(p[0] == harness for p in asset["placements"]))
         and (
             not needle
             or needle
@@ -179,27 +185,53 @@ def draw_detail(
         row += 1
 
 
-def draw_help(screen: Any, height: int, width: int) -> None:
-    lines = (
-        "KEYS",
-        "↑/↓ or j/k   Navigate assets",
+def draw_overlay(screen: Any, height: int, width: int, title: str, lines: tuple[str, ...]) -> None:
+    box_width = min(70, width - 4)
+    box_height = min(height - 2, len(lines) + 5)
+    y = max(1, (height - box_height) // 2)
+    x = max(2, (width - box_width) // 2)
+    window = curses.newwin(box_height, box_width, y, x)
+    window.bkgd(" ", curses.color_pair(5))
+    window.border()
+    add(window, 1, 2, title, curses.A_BOLD)
+    for row, line in enumerate(lines[: box_height - 4], start=3):
+        add(window, row, 2, line)
+    add(window, box_height - 2, 2, "Esc or any listed toggle key to close", curses.A_DIM)
+    window.refresh()
+
+
+def help_lines() -> tuple[str, ...]:
+    return (
+        "↑/↓ or j/k   Navigate Assets",
         "/            Search",
         "x            Clear search",
-        "f            Cycle Asset Family",
+        "f / h        Cycle Asset Family / Harness Surface",
+        "Enter        Preview selected Asset",
+        "!            Show Discovery Problems",
         "r            Rescan",
         "o / v / c    Open / reveal / copy path",
         "?            Toggle this help",
         "q            Quit",
     )
-    box_width = min(50, width - 4)
-    box_height = len(lines) + 4
-    y = max(1, (height - box_height) // 2)
-    x = max(2, (width - box_width) // 2)
-    window = curses.newwin(box_height, box_width, y, x)
-    window.border()
-    for row, line in enumerate(lines, start=2):
-        add(window, row, 2, line, curses.A_BOLD if row == 2 else 0)
-    window.refresh()
+
+
+def preview_lines(asset: dict[str, Any]) -> tuple[str, ...]:
+    placements = tuple(
+        f"  {harness} · {scope} · {state}"
+        for harness, scope, state in asset["placements"]
+    )
+    return (
+        asset["description"],
+        "",
+        f"Family: {asset['family']}",
+        f"Path: {asset['path']}",
+        f"Updated: {asset['updated']}",
+        "",
+        "Placements:",
+        *placements,
+        "",
+        "Read-only preview; source content is never executed.",
+    )
 
 
 def prompt_search(screen: Any, height: int, width: int, current: str) -> str:
@@ -226,13 +258,15 @@ def run(screen: Any) -> None:
     curses.init_pair(2, curses.COLOR_CYAN, -1)
     curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
     curses.init_pair(4, curses.COLOR_CYAN, -1)
+    curses.init_pair(5, curses.COLOR_WHITE, curses.COLOR_BLUE)
     screen.keypad(True)
 
     selected = 0
     family_index = 0
+    harness_index = 0
     query = ""
     status = "5 assets from 3 Source Roots · 1 Discovery Problem"
-    show_help = False
+    overlay: str | None = None
 
     while True:
         screen.erase()
@@ -245,7 +279,8 @@ def run(screen: Any) -> None:
             continue
 
         family = FAMILIES[family_index]
-        assets = filtered_assets(query, family)
+        harness = HARNESSES[harness_index]
+        assets = filtered_assets(query, family, harness)
         selected = min(selected, max(0, len(assets) - 1))
         asset = assets[selected] if assets else None
         left_width = max(30, min(42, width // 3))
@@ -253,7 +288,7 @@ def run(screen: Any) -> None:
         bottom = height - 2
 
         draw_header(screen, width)
-        filter_text = f"Family: {family}"
+        filter_text = f"Family: {family}  ·  Harness: {harness}"
         if query:
             filter_text += f"  ·  Search: {query}"
         add(screen, 1, 1, f"{len(assets)} results  ·  {filter_text}", curses.A_DIM)
@@ -262,21 +297,36 @@ def run(screen: Any) -> None:
         draw_list(screen, assets, selected, top, bottom, left_width)
         draw_detail(screen, asset, top, bottom, left_width, width)
         screen.hline(height - 2, 0, curses.ACS_HLINE, width)
-        add(screen, height - 1, 0, " ↑↓ navigate  / search  f family  o open  v reveal  c copy  ? help  q quit ", curses.A_REVERSE)
+        add(screen, height - 1, 0, " ↑↓ navigate  / search  f family  h harness  Enter preview  ! problems  ? help  q quit ", curses.A_REVERSE)
         add(screen, height - 2, 1, status, curses.A_DIM)
         screen.refresh()
 
-        if show_help:
-            draw_help(screen, height, width)
+        if overlay == "help":
+            draw_overlay(screen, height, width, "KEYS", help_lines())
+        elif overlay == "preview" and asset:
+            draw_overlay(screen, height, width, f"PREVIEW · {asset['name']}", preview_lines(asset))
+        elif overlay == "problems":
+            draw_overlay(
+                screen,
+                height,
+                width,
+                "DISCOVERY PROBLEMS",
+                (
+                    "Unreadable entry: ~/work/legacy/.agents/skills/old/SKILL.md",
+                    "Reason: permission denied",
+                    "",
+                    "No partial Asset was added to the Catalog Snapshot.",
+                ),
+            )
 
         key = screen.getch()
-        if key in (ord("q"), 27) and not show_help:
+        if overlay:
+            overlay = None
+            continue
+        if key in (ord("q"), 27):
             return
         if key == ord("?"):
-            show_help = not show_help
-            continue
-        if show_help:
-            show_help = False
+            overlay = "help"
             continue
         if key in (curses.KEY_UP, ord("k")):
             selected = max(0, selected - 1)
@@ -286,6 +336,14 @@ def run(screen: Any) -> None:
             family_index = (family_index + 1) % len(FAMILIES)
             selected = 0
             status = f"Asset Family: {FAMILIES[family_index]}"
+        elif key == ord("h"):
+            harness_index = (harness_index + 1) % len(HARNESSES)
+            selected = 0
+            status = f"Harness Surface: {HARNESSES[harness_index]}"
+        elif key in (10, 13, curses.KEY_ENTER) and asset:
+            overlay = "preview"
+        elif key == ord("!"):
+            overlay = "problems"
         elif key == ord("/"):
             curses.curs_set(1)
             query = prompt_search(screen, height, width, query)
@@ -304,13 +362,16 @@ def run(screen: Any) -> None:
 
 
 def check() -> None:
-    assert [asset["name"] for asset in filtered_assets("codex", "All")] == [
+    assert [asset["name"] for asset in filtered_assets("codex", "All", "All")] == [
         "AGENTS.md",
         "research",
     ]
-    assert [asset["name"] for asset in filtered_assets("", "Rule")] == [
+    assert [asset["name"] for asset in filtered_assets("", "Rule", "All")] == [
         "AGENTS.md",
         "frontend-accessibility",
+    ]
+    assert [asset["name"] for asset in filtered_assets("", "All", "Gemini CLI")] == [
+        "research",
     ]
     assert clipped("abcdef", 4) == "abc…"
     print("catalog_tui.py: check passed")
