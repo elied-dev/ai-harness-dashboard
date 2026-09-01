@@ -2,8 +2,8 @@
 """Throwaway interactive TUI prototype for the local AI Asset catalog.
 
 Run: python3 prototype/catalog_tui.py
-Keys: arrows/j/k navigate, / search, x clear, f family, h harness,
-      Enter preview, ! problems, r rescan, o/v/c source actions, ? help, q quit.
+Keys: arrows/j/k navigate, Tab changes focus, / search, f family, h harness,
+      Enter inspects, ! problems, r rescan, o/v/c source actions, ? help, q quit.
 """
 
 from __future__ import annotations
@@ -23,10 +23,10 @@ ASSETS: list[dict[str, Any]] = [
         "path": "~/projects/ai-harness-dashboard/AGENTS.md",
         "updated": "2 min ago",
         "placements": [
-            ("Pi CLI", "project", "active"),
-            ("Codex CLI", "project", "merged"),
-            ("Cursor", "project", "active"),
-            ("Copilot CLI", "project", "unknown"),
+            ("Pi CLI", "project", "active", "./AGENTS.md"),
+            ("Codex CLI", "project", "merged", "./AGENTS.md"),
+            ("Cursor", "project", "active", "./AGENTS.md"),
+            ("Copilot CLI", "project", "unknown", "./AGENTS.md"),
         ],
     },
     {
@@ -36,9 +36,9 @@ ASSETS: list[dict[str, Any]] = [
         "path": "~/.agents/skills/research/SKILL.md",
         "updated": "18 min ago",
         "placements": [
-            ("Pi CLI", "user", "active"),
-            ("Codex CLI", "user", "active"),
-            ("Gemini CLI", "user", "active"),
+            ("Pi CLI", "user", "active", "~/.agents/skills/research"),
+            ("Codex CLI", "user", "active", "~/.agents/skills/research"),
+            ("Gemini CLI", "user", "active", "~/.agents/skills/research"),
         ],
     },
     {
@@ -47,7 +47,7 @@ ASSETS: list[dict[str, Any]] = [
         "description": "Reviews trust boundaries and unsafe defaults.",
         "path": "~/.claude/agents/security-reviewer.md",
         "updated": "Yesterday",
-        "placements": [("Claude Code", "user", "active")],
+        "placements": [("Claude Code", "user", "active", "~/.claude/agents/security-reviewer.md")],
     },
     {
         "name": "review-changes",
@@ -55,7 +55,7 @@ ASSETS: list[dict[str, Any]] = [
         "description": "Reviews the working tree for actionable findings.",
         "path": "~/.pi/agent/prompts/review-changes.md",
         "updated": "3 days ago",
-        "placements": [("Pi CLI", "user", "active")],
+        "placements": [("Pi CLI", "user", "active", "~/.pi/agent/prompts/review-changes.md")],
     },
     {
         "name": "frontend-accessibility",
@@ -63,7 +63,7 @@ ASSETS: list[dict[str, Any]] = [
         "description": "Applies accessibility guidance to frontend files.",
         "path": "~/work/acme/.cursor/rules/frontend-accessibility.mdc",
         "updated": "5 days ago",
-        "placements": [("Cursor", "project", "active")],
+        "placements": [("Cursor", "project", "active", ".cursor/rules/frontend-accessibility.mdc")],
     },
 ]
 
@@ -120,11 +120,12 @@ def draw_list(
     screen: Any,
     assets: list[dict[str, Any]],
     selected: int,
+    focused: bool,
     top: int,
     bottom: int,
     width: int,
 ) -> None:
-    add(screen, top, 1, "ASSETS", curses.A_BOLD)
+    add(screen, top, 1, "ASSETS" + (" · FOCUSED" if focused else ""), curses.A_BOLD)
     visible_rows = max(1, bottom - top - 2)
     offset = min(max(0, selected - visible_rows + 1), max(0, len(assets) - visible_rows))
 
@@ -145,6 +146,8 @@ def draw_list(
 def draw_detail(
     screen: Any,
     asset: dict[str, Any] | None,
+    placement_index: int,
+    placements_focused: bool,
     top: int,
     bottom: int,
     left: int,
@@ -174,15 +177,28 @@ def draw_detail(
         row += 1
 
     row += 1
-    add(screen, row, x, "PLACEMENTS", curses.A_BOLD)
+    add(
+        screen,
+        row,
+        x,
+        "PLACEMENTS" + (" · FOCUSED" if placements_focused else ""),
+        curses.A_BOLD,
+    )
     row += 1
-    for harness, scope, state in asset["placements"]:
-        if row >= bottom - 1:
+    for index, (harness, scope, state, _path) in enumerate(asset["placements"]):
+        if row >= bottom - 3:
             break
-        state_style = curses.color_pair(2) if state in ("active", "merged") else curses.A_DIM
-        add(screen, row, x, f"{harness:<16} {scope:<8}")
-        add(screen, row, min(width - len(state) - 2, x + 28), state.upper(), state_style)
+        marker = ">" if placements_focused and index == placement_index else " "
+        style = curses.color_pair(3) | curses.A_BOLD if marker == ">" else 0
+        add(screen, row, x, f"{marker} {harness:<16} {scope:<8}", style)
+        add(screen, row, min(width - len(state) - 2, x + 31), state.upper(), curses.color_pair(2) if state in ("active", "merged") else curses.A_DIM)
         row += 1
+
+    if asset["placements"] and row < bottom - 1:
+        harness, scope, state, path = asset["placements"][placement_index]
+        add(screen, row + 1, x, f"Selected: {harness} · {scope} · {state}", curses.A_DIM)
+        if row + 2 < bottom:
+            add(screen, row + 2, x, path, curses.color_pair(4))
 
 
 def draw_overlay(screen: Any, height: int, width: int, title: str, lines: tuple[str, ...]) -> None:
@@ -202,11 +218,12 @@ def draw_overlay(screen: Any, height: int, width: int, title: str, lines: tuple[
 
 def help_lines() -> tuple[str, ...]:
     return (
-        "↑/↓ or j/k   Navigate Assets",
+        "↑/↓ or j/k   Navigate the focused list",
+        "Tab          Focus Assets or Placements",
         "/            Search",
         "x            Clear search",
         "f / h        Cycle Asset Family / Harness Surface",
-        "Enter        Preview selected Asset",
+        "Enter        Inspect selected Asset or Placement",
         "!            Show Discovery Problems",
         "r            Rescan",
         "o / v / c    Open / reveal / copy path",
@@ -217,8 +234,8 @@ def help_lines() -> tuple[str, ...]:
 
 def preview_lines(asset: dict[str, Any]) -> tuple[str, ...]:
     placements = tuple(
-        f"  {harness} · {scope} · {state}"
-        for harness, scope, state in asset["placements"]
+        f"  {harness} · {scope} · {state} · {path}"
+        for harness, scope, state, path in asset["placements"]
     )
     return (
         asset["description"],
@@ -231,6 +248,19 @@ def preview_lines(asset: dict[str, Any]) -> tuple[str, ...]:
         *placements,
         "",
         "Read-only preview; source content is never executed.",
+    )
+
+
+def placement_lines(asset: dict[str, Any], index: int) -> tuple[str, ...]:
+    harness, scope, state, path = asset["placements"][index]
+    return (
+        f"Asset: {asset['name']}",
+        f"Harness Surface: {harness}",
+        f"Scope: {scope}",
+        f"Resolution State: {state}",
+        f"Observed path: {path}",
+        "",
+        "This is adapter evidence, not a universal precedence decision.",
     )
 
 
@@ -262,6 +292,8 @@ def run(screen: Any) -> None:
     screen.keypad(True)
 
     selected = 0
+    placement_index = 0
+    focus = "assets"
     family_index = 0
     harness_index = 0
     query = ""
@@ -283,6 +315,10 @@ def run(screen: Any) -> None:
         assets = filtered_assets(query, family, harness)
         selected = min(selected, max(0, len(assets) - 1))
         asset = assets[selected] if assets else None
+        placement_index = min(
+            placement_index,
+            max(0, len(asset["placements"]) - 1) if asset else 0,
+        )
         left_width = max(30, min(42, width // 3))
         top = 3
         bottom = height - 2
@@ -294,17 +330,34 @@ def run(screen: Any) -> None:
         add(screen, 1, 1, f"{len(assets)} results  ·  {filter_text}", curses.A_DIM)
         screen.hline(2, 0, curses.ACS_HLINE, width)
         screen.vline(top, left_width, curses.ACS_VLINE, max(1, bottom - top))
-        draw_list(screen, assets, selected, top, bottom, left_width)
-        draw_detail(screen, asset, top, bottom, left_width, width)
+        draw_list(screen, assets, selected, focus == "assets", top, bottom, left_width)
+        draw_detail(
+            screen,
+            asset,
+            placement_index,
+            focus == "placements",
+            top,
+            bottom,
+            left_width,
+            width,
+        )
         screen.hline(height - 2, 0, curses.ACS_HLINE, width)
-        add(screen, height - 1, 0, " ↑↓ navigate  / search  f family  h harness  Enter preview  ! problems  ? help  q quit ", curses.A_REVERSE)
+        add(screen, height - 1, 0, " Tab focus  ↑↓ navigate  / search  f family  h harness  Enter inspect  ! problems  ? help  q quit ", curses.A_REVERSE)
         add(screen, height - 2, 1, status, curses.A_DIM)
         screen.refresh()
 
         if overlay == "help":
             draw_overlay(screen, height, width, "KEYS", help_lines())
-        elif overlay == "preview" and asset:
-            draw_overlay(screen, height, width, f"PREVIEW · {asset['name']}", preview_lines(asset))
+        elif overlay == "asset" and asset:
+            draw_overlay(screen, height, width, f"ASSET · {asset['name']}", preview_lines(asset))
+        elif overlay == "placement" and asset:
+            draw_overlay(
+                screen,
+                height,
+                width,
+                "PLACEMENT",
+                placement_lines(asset, placement_index),
+            )
         elif overlay == "problems":
             draw_overlay(
                 screen,
@@ -328,20 +381,35 @@ def run(screen: Any) -> None:
         if key == ord("?"):
             overlay = "help"
             continue
-        if key in (curses.KEY_UP, ord("k")):
-            selected = max(0, selected - 1)
+        if key == 9 and asset:
+            focus = "placements" if focus == "assets" else "assets"
+            status = f"Focus: {focus.title()}"
+        elif key in (curses.KEY_UP, ord("k")):
+            if focus == "assets":
+                selected = max(0, selected - 1)
+                placement_index = 0
+            elif asset:
+                placement_index = max(0, placement_index - 1)
         elif key in (curses.KEY_DOWN, ord("j")):
-            selected = min(max(0, len(assets) - 1), selected + 1)
+            if focus == "assets":
+                selected = min(max(0, len(assets) - 1), selected + 1)
+                placement_index = 0
+            elif asset:
+                placement_index = min(len(asset["placements"]) - 1, placement_index + 1)
         elif key == ord("f"):
             family_index = (family_index + 1) % len(FAMILIES)
             selected = 0
+            placement_index = 0
+            focus = "assets"
             status = f"Asset Family: {FAMILIES[family_index]}"
         elif key == ord("h"):
             harness_index = (harness_index + 1) % len(HARNESSES)
             selected = 0
+            placement_index = 0
+            focus = "assets"
             status = f"Harness Surface: {HARNESSES[harness_index]}"
         elif key in (10, 13, curses.KEY_ENTER) and asset:
-            overlay = "preview"
+            overlay = "asset" if focus == "assets" else "placement"
         elif key == ord("!"):
             overlay = "problems"
         elif key == ord("/"):
@@ -349,10 +417,14 @@ def run(screen: Any) -> None:
             query = prompt_search(screen, height, width, query)
             curses.curs_set(0)
             selected = 0
+            placement_index = 0
+            focus = "assets"
             status = f"Search: {query or 'cleared'}"
         elif key == ord("x"):
             query = ""
             selected = 0
+            placement_index = 0
+            focus = "assets"
             status = "Search cleared"
         elif key == ord("r"):
             status = "Scan complete · no changes"
